@@ -23,11 +23,21 @@ class PoseDetector:
         results = self.pose.process(image_rgb)
         
         status = "Unknown"
+        face_area_ratio = 0.0
         
         if results.pose_landmarks:
             h, w, _ = frame.shape
             landmarks = results.pose_landmarks.landmark
             
+            # 얼굴(머리) 크기 비율 계산 (Pose의 0~10번 랜드마크 활용)
+            try:
+                face_landmarks = [landmarks[i] for i in range(11)]
+                face_x = [lm.x for lm in face_landmarks]
+                face_y = [lm.y for lm in face_landmarks]
+                face_area_ratio = (max(face_x) - min(face_x)) * (max(face_y) - min(face_y))
+            except Exception:
+                pass
+                
             # 좌우 평균값을 사용하여 기준점 설정 (정확도를 위해)
             try:
                 y_shoulder = (landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].y + 
@@ -61,7 +71,7 @@ class PoseDetector:
             self.mp_drawing.draw_landmarks(
                 frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
             
-        return frame, status
+        return frame, status, face_area_ratio
 
 if __name__ == "__main__":
     detector = PoseDetector()
