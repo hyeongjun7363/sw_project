@@ -8,6 +8,7 @@ class PoseDetector:
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
+            model_complexity=0,  # 연산량 최소화 (Lite 모델 사용)
             min_detection_confidence=min_detection_confidence
         )
         self.mp_drawing = mp.solutions.drawing_utils
