@@ -47,8 +47,9 @@ def main():
             cv2.putText(frame, f"Pose: {pose_status}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
             cv2.putText(frame, f"Face Area: {face_area_ratio:.3f}", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
             
-            # 사람이 가까이 오면 상태 변경 (임계값 0.05 이상)
-            if face_area_ratio >= 0.05:
+            # 사람이 가까이 오면 상태 변경 (Pose 머리 면적 기준)
+            # Pose의 머리 면적은 FaceMesh보다 작게 잡히므로 임계값을 0.03으로 낮춤
+            if face_area_ratio >= 0.03:
                 current_mode = "NEAR"
                 print("사람이 접근했습니다 -> NEAR 모드로 전환")
                 
@@ -69,8 +70,9 @@ def main():
                 y_coords = [lm.y for lm in landmarks]
                 area_ratio = (max(x_coords) - min(x_coords)) * (max(y_coords) - min(y_coords))
                 
-                # 얼굴이 멀어지면 상태 변경 (깜빡임 방지를 위해 0.04 이하로 떨어질 때 전환)
-                if area_ratio < 0.04:
+                # 얼굴이 멀어지면 상태 변경 (FaceMesh는 면적이 넓으므로 임계값을 0.08로 높게 설정)
+                # 즉, 화면의 8% 이하로 얼굴이 작아지면 즉시 FAR 모드로 빠짐
+                if area_ratio < 0.08:
                     current_mode = "FAR"
                     print("사람이 멀어졌습니다 -> FAR 모드로 전환")
                 else:
