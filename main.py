@@ -10,9 +10,13 @@ def main():
     vital_analyzer = VitalAnalyzer()
     pose_detector = PoseDetector()
     
-    # 거리 판별용 Face Detection 초기화 (MediaPipe)
-    mp_face_detection = mp.solutions.face_detection
-    face_detection = mp_face_detection.FaceDetection(min_detection_confidence=0.5)
+    # 통합 Face Mesh 초기화 (거리 판별 + 생체 분석 공용)
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(
+        max_num_faces=1,
+        refine_landmarks=False,
+        min_detection_confidence=0.5
+    )
     
     print("시스템이 시작되었습니다. 종료하려면 'q'를 누르세요.")
     
@@ -25,19 +29,26 @@ def main():
         h, w, _ = frame.shape
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # 1. 거리 판별 루프 (Main Loop)
-        results = face_detection.process(image_rgb)
+        # 1. 통합 Face Mesh 연산 (프레임당 단 1회)
+        results = face_mesh.process(image_rgb)
         
         mode = "Searching..."
         is_near = False
+        landmarks = None
         
-        if results.detections:
-            # 가장 신뢰도 높은 첫 번째 얼굴 사용
-            detection = results.detections[0]
-            bboxC = detection.location_data.relative_bounding_box
+        if results.multi_face_landmarks:
+            landmarks = results.multi_face_landmarks[0].landmark
+            
+            # 랜드마크들로부터 가상의 Bounding Box 계산
+            x_coords = [lm.x for lm in landmarks]
+            y_coords = [lm.y for lm in landmarks]
+            
+            # 최소/최대 좌표로 박스의 폭과 높이 비율(0~1) 계산
+            bbox_w = max(x_coords) - min(x_coords)
+            bbox_h = max(y_coords) - min(y_coords)
             
             # Bounding Box 면적 비율로 근거리/원거리 판별
-            area_ratio = bboxC.width * bboxC.height
+            area_ratio = bbox_w * bbox_h
             
             # 임계값: 전체 화면의 10% 이상이면 근거리 (필요에 따라 조정)
             DISTANCE_THRESHOLD = 0.10
@@ -50,21 +61,23 @@ def main():
                 mode = "Far Mode (Fall Detection)"
                 
             # 얼굴 바운딩 박스 렌더링 (거리 참고용)
-            bbox_x = int(bboxC.xmin * w)
-            bbox_y = int(bboxC.ymin * h)
-            bbox_w = int(bboxC.width * w)
-            bbox_h = int(bboxC.height * h)
-            cv2.rectangle(frame, (bbox_x, bbox_y), (bbox_x + bbox_w, bbox_y + bbox_h), (255, 0, 0), 2)
-            cv2.putText(frame, f"Area: {area_ratio:.2f}", (bbox_x, bbox_y - 10), 
+            bbox_x_px = int(min(x_coords) * w)
+            bbox_y_px = int(min(y_coords) * h)
+            bbox_w_px = int(bbox_w * w)
+            bbox_h_px = int(bbox_h * h)
+            
+            cv2.rectangle(frame, (bbox_x_px, bbox_y_px), (bbox_x_px + bbox_w_px, bbox_y_px + bbox_h_px), (255, 0, 0), 2)
+            cv2.putText(frame, f"Area: {area_ratio:.2f}", (bbox_x_px, bbox_y_px - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
         else:
             mode = "Far Mode (Fall Detection)"
-            is_near = False # 얼굴이 안보이면 기본적으로 원거리(낙상) 모드로 동작
+            is_near = False
             
         # 2. 모드 스위칭 병렬 처리
-        if is_near:
+        if is_near and landmarks:
             # 근거리 -> 기능 1 (생체 정보 분석)
-            frame, vitals = vital_analyzer.analyze(frame)
+            # 랜드마크를 넘겨주어 vital_analyzer 내부에서 다시 AI 연산하는 것을 방지
+            frame, vitals = vital_analyzer.analyze(frame, landmarks)
             
             # 결과 표시
             cv2.putText(frame, f"HR: {vitals['hr']}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -84,8 +97,15 @@ def main():
         # 화면 렌더링
         cv2.imshow("Hybrid Vision System", frame)
         
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             break
+        elif key == ord('b'):
+            # 'b' 키를 누르면 기준점(Baseline) 저장 트리거
+            if is_near:
+                vital_analyzer.trigger_baseline_capture()
+            else:
+                print("얼굴이 가까이 있어야 기준점을 저장할 수 있습니다.")
             
     cam.release()
     cv2.destroyAllWindows()

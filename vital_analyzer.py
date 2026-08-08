@@ -1,107 +1,72 @@
 import cv2
 import numpy as np
-import mediapipe as mp
-import collections
+
+from get_face_roi import FaceROIExtractor
+from rppg_analyzer import RPPGAnalyzer
+from redness_analyzer import LabHeatStressAnalyzer
+from texture_analyzer import TextureAnalyzer
 
 class VitalAnalyzer:
-    """rPPG 및 피부 질감(홍조, 발한) 분석 모듈 (근거리 모드)"""
+    """고도화된 rPPG 및 생체 신호(홍조, 발한) 분석 통합 모듈"""
     
     def __init__(self, fps=30):
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=False,
-            min_detection_confidence=0.5
-        )
         self.fps = fps
-        self.g_channel_history = collections.deque(maxlen=fps * 10) # 10초 데이터
-        self.baseline_redness = None
-        self.baseline_sweatness = None
         
-    def analyze(self, frame):
+        # 전문 분석기 및 ROI 추출기 인스턴스화
+        self.roi_extractor = FaceROIExtractor()
+        self.rppg = RPPGAnalyzer(buffer_size=fps*5) # 5초 분량 데이터 버퍼링
+        self.redness = LabHeatStressAnalyzer()
+        self.texture = TextureAnalyzer()
+        
+    def trigger_baseline_capture(self):
+        """'b' 키를 눌렀을 때 기준점 저장을 트리거합니다."""
+        success = self.roi_extractor.save_baseline_now()
+        if success:
+            # ROI 추출기에서 성공적으로 기준점을 캡처했으면, 각 분석기에 세팅
+            self.redness.set_baseline(self.roi_extractor.baseline_roi_left, self.roi_extractor.baseline_roi_right)
+            self.texture.set_baseline(self.roi_extractor.baseline_roi_left, self.roi_extractor.baseline_roi_right)
+        return success
+        
+    def analyze(self, frame, landmarks):
         """
-        프레임을 받아 생체 정보(심박, 홍조, 발한)를 분석합니다.
+        프레임과 FaceMesh 랜드마크를 받아 생체 정보(심박, 홍조, 발한)를 분석합니다.
         Returns:
-            frame: ROI가 표시된 프레임
+            frame: (필요시 렌더링된) 프레임
             vitals: 측정 결과 딕셔너리
         """
-        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.face_mesh.process(image_rgb)
-        vitals = {"hr": "Calculating...", "redness": "Normal", "sweat": "Normal"}
+        # 초기 상태 반환값 설정
+        vitals = {
+            "hr": "Calculating...", 
+            "redness": "Baseline needed", 
+            "sweat": "Baseline needed"
+        }
         
-        if results.multi_face_landmarks:
-            landmarks = results.multi_face_landmarks[0].landmark
-            h, w, _ = frame.shape
+        if landmarks:
+            # 1. 뺨 영역(ROI) 정밀 다각형 추출
+            roi_left, roi_right = self.roi_extractor.extract_roi(frame, landmarks)
             
-            # 간이 ROI 설정 (양 볼 부위 랜드마크 대략적 위치: 234(좌측 끝), 454(우측 끝))
-            # 단순화를 위해 전체 얼굴 바운딩 박스의 중앙 50% 영역을 ROI로 사용
-            x_coords = [int(lm.x * w) for lm in landmarks]
-            y_coords = [int(lm.y * h) for lm in landmarks]
-            
-            x_min, x_max = max(0, min(x_coords)), min(w, max(x_coords))
-            y_min, y_max = max(0, min(y_coords)), min(h, max(y_coords))
-            
-            roi_x1 = int(x_min + (x_max - x_min) * 0.3)
-            roi_x2 = int(x_min + (x_max - x_min) * 0.7)
-            roi_y1 = int(y_min + (y_max - y_min) * 0.4)
-            roi_y2 = int(y_min + (y_max - y_min) * 0.6)
-            
-            roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
-            
-            if roi.size > 0:
-                # --- 1. 심박수 (rPPG) ---
-                # G 채널 평균값 추출 (가장 혈류 변화에 민감)
-                g_mean = np.mean(roi[:, :, 1])
-                self.g_channel_history.append(g_mean)
-                
-                if len(self.g_channel_history) > self.fps * 3: # 3초 이상 데이터가 모이면
-                    # 단순화된 피크 검출 또는 변화율 기반 임의 심박수 계산 로직
-                    # (실제 환경에서는 FFT나 Bandpass Filter 적용 필요)
-                    signal = np.array(self.g_channel_history)
-                    signal_detrend = signal - np.mean(signal)
-                    zero_crossings = np.where(np.diff(np.sign(signal_detrend)))[0]
-                    peaks_count = len(zero_crossings) / 2
-                    duration = len(self.g_channel_history) / self.fps
-                    hr = int((peaks_count / duration) * 60)
+            if roi_left.size > 0 and roi_right.size > 0:
+                # 2. rPPG 심박수 분석 (항상 실행)
+                bpm = self.rppg.process_frame(roi_left, roi_right)
+                if bpm > 0:
+                    vitals["hr"] = f"{int(bpm)} bpm"
                     
-                    # 지나치게 튀는 값 보정 (60~100 사이 맵핑으로 시뮬레이션 안정성 확보)
-                    if hr < 40 or hr > 150:
-                        vitals["hr"] = "Measuring..."
-                    else:
-                        vitals["hr"] = f"{hr} bpm"
+                # 3. 홍조 및 땀 분석 (내부적으로 Baseline이 없으면 "Baseline needed" 문자열 리턴)
+                redness_result = self.redness.process_frame(roi_left, roi_right)
+                texture_result = self.texture.process_frame(roi_left, roi_right)
+                
+                vitals["redness"] = redness_result["status"]
+                vitals["sweat"] = texture_result["status"]
+                
+                # 얼굴 박스 대신 양뺨의 대략적인 중심 위치에 점 표시 (디버깅/안내용)
+                h, w, _ = frame.shape
+                left_cheek_pt = (int(landmarks[118].x * w), int(landmarks[118].y * h))
+                right_cheek_pt = (int(landmarks[347].x * w), int(landmarks[347].y * h))
+                cv2.circle(frame, left_cheek_pt, 3, (0, 255, 0), -1)
+                cv2.circle(frame, right_cheek_pt, 3, (0, 255, 0), -1)
 
-                # --- 2. 홍조 및 발한 분석 (HSV 색공간) ---
-                roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-                
-                # 홍조: S채널(채도) 평균값 증가로 간이 판단
-                current_redness = np.mean(roi_hsv[:, :, 1])
-                if self.baseline_redness is None:
-                    self.baseline_redness = current_redness
-                
-                if current_redness > self.baseline_redness * 1.2:
-                    vitals["redness"] = "High (Flushed)"
-                else:
-                    vitals["redness"] = "Normal"
-                    
-                # 발한: V채널(명도) 중 임계값 이상의 밝은 픽셀(난반사) 비율로 판단
-                v_channel = roi_hsv[:, :, 2]
-                specular_pixels = np.sum(v_channel > 200)
-                total_pixels = v_channel.size
-                current_sweatness = specular_pixels / total_pixels
-                
-                if self.baseline_sweatness is None:
-                    self.baseline_sweatness = current_sweatness
-                
-                if current_sweatness > self.baseline_sweatness + 0.05: # 5% 이상 증가
-                    vitals["sweat"] = "Sweating"
-                else:
-                    vitals["sweat"] = "Normal"
-            
-            # ROI 렌더링
-            cv2.rectangle(frame, (roi_x1, roi_y1), (roi_x2, roi_y2), (0, 255, 0), 2)
-            
         return frame, vitals
 
 if __name__ == "__main__":
     analyzer = VitalAnalyzer()
-    print("VitalAnalyzer 모듈 초기화 완료.")
+    print("고도화된 VitalAnalyzer 모듈 초기화 완료.")
