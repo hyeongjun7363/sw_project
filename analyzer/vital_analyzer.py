@@ -1,10 +1,10 @@
 import cv2
 import numpy as np
 
-from get_face_roi import FaceROIExtractor
-from rppg_analyzer import RPPGAnalyzer
-from redness_analyzer import LabHeatStressAnalyzer
-from texture_analyzer import TextureAnalyzer
+from analyzer.get_face_roi import FaceROIExtractor
+from analyzer.rppg_analyzer import RPPGAnalyzer
+from analyzer.redness_analyzer import LabHeatStressAnalyzer
+from analyzer.texture_analyzer import TextureAnalyzer
 
 class VitalAnalyzer:
     """고도화된 rPPG 및 생체 신호(홍조, 발한) 분석 통합 모듈"""

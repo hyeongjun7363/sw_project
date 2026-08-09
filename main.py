@@ -1,8 +1,8 @@
 import cv2
 import mediapipe as mp
-from camera_manager import CameraManager
-from vital_analyzer import VitalAnalyzer
-from pose_detector import PoseDetector
+from camera.camera_manager import CameraManager
+from analyzer.vital_analyzer import VitalAnalyzer
+from analyzer.pose_detector import PoseDetector
 
 def main():
     # 초기화
